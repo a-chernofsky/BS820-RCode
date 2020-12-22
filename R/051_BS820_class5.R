@@ -1,0 +1,152 @@
+###########################################################################################################
+#
+# BS820 R Code: Lecture 5 Code
+# Description: Numerical Problems & Variable Selection
+# Dataset: 
+# created: 11/12/2020
+#
+############################################################################################################
+
+
+# install/load packages ---------------------------------------------------
+
+if (!require('readxl')) install.packages('readxl') 
+if (!require('broom')) install.packages('broom') 
+if (!require('epitools')) install.packages('epitools') 
+if (!require('logistf')) install.packages('logistf') 
+if (!require('pwr')) install.packages('pwr') 
+if (!require('survival')) install.packages('survival')
+if (!require('GDAtools')) install.packages('GDAtools')
+if (!require('MASS')) install.packages('MASS')
+if (!require('car')) install.packages('car')
+if (!require('nnet')) install.packages('nnet')
+if (!require('geepack')) install.packages('geepack')
+if (!require('logbin')) install.packages('logbin')
+
+library(readxl)
+library(broom)
+library(epitools)
+library(logistf)
+library(pwr)
+library(survival)
+library(GDAtools)
+library(MASS)
+library(car)
+library(nnet)
+library(geepack)
+library(logbin)
+
+# read in data ------------------------------------------------------------
+
+arthrit <- data.frame(sex = rep(c("female", "female", "male", "male"),3), 
+                      treat = rep(c("active", "placebo"), 6), 
+                      cimprove = c(rep("marked", 4), rep("some", 4), rep("none", 4)), 
+                      count = c(16, 6, 5, 1, 5, 7, 2, 0, 6, 19, 7, 10))
+
+arthrit$treat <- factor(arthrit$treat, levels = c("placebo", "active"))
+
+arthrit$improve <- ifelse(arthrit$cimprove == "none", 0,
+                          ifelse(arthrit$cimprove == "some", 1,
+                                 ifelse(arthrit$cimprove == "marked", 2, NA)))
+
+arthrit$improv1 <- ifelse(arthrit$improve == 2, 1, 0)
+arthrit$improv2 <- ifelse(arthrit$improve >= 1, 1, 0)
+
+wtable(arthrit$sex, arthrit$improv1, w = arthrit$count, na = F)
+wtable(arthrit$treat, arthrit$improv1, w = arthrit$count, na = F)
+
+wtable(arthrit$sex, arthrit$improv2, w = arthrit$count, na = F)
+wtable(arthrit$treat, arthrit$improv2, w = arthrit$count, na = F)
+
+arthrit$improve <- factor(arthrit$improve)
+
+
+# Proportional odds model -------------------------------------------------
+
+pomodel1 <- polr(improve ~ sex + treat + sex*treat, weights = count,  data = arthrit)
+poTest(pomodel1)
+
+pomodel2 <- polr(improve ~ sex + treat, weights = count,  data = arthrit)
+poTest(pomodel2)
+
+
+# Multinomial logistic regression ---------------------------------------------
+
+
+mlogit1 <- multinom(improve ~ sex + treat + treat*sex , weights = count,  data = arthrit)
+summary(mlogit1)
+
+mlogit2 <- multinom(improve ~ sex + treat, weights = count,  data = arthrit)
+summary(mlogit2)
+
+
+# Recurrent Events --------------------------------------------------------
+
+fap <- data.frame(idnum = 1:22, 
+                  male = c(0, 0, 1, 0, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1), 
+                  treat = c(1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 1, 1, 1),
+                  base_n = c(7, 77, 7, 5, 23, 35, 11, 12, 7, 318, 160, 8, 20, 11, 24, 34, 54, 16, 30, 10, 20, 12),
+                  age = c(17, 20, 16, 18, 22, 13, 23, 34, 50, 19, 17, 23, 22, 30, 27, 23, 22, 13, 34, 23, 22, 42),
+                  r_n = c(6, 67, 4, 5, 16, 31, 6, 20, 7, 347, 142, 1, 16, 20, 26, 27, 45, 10, 30, 6, 5, 8))
+
+sumstats <- function(x) c(min = min(x), 
+                          q1 = quantile(x, probs = 0.25), 
+                          median = median(x), 
+                          mean = mean(x),
+                          q3 = quantile(x, probs = 0.75),
+                          max = max(x))
+
+tapply(fap$r_n, fap$treat, sumstats)
+
+pos_reg1 <- glm(r_n ~ treat, family = poisson(), data = fap)
+tidy(pos_reg1)
+glance(pos_reg1)
+
+pos_reg2 <- glm(r_n ~ treat + male + base_n + age, family = poisson(), data = fap)
+tidy(pos_reg2)
+glance(pos_reg2)
+
+
+pos_reg3 <- glm(r_n ~ treat + male + base_n + age, family = quasipoisson(), data = fap)
+tidy(pos_reg3)
+glance(pos_reg3)
+
+fap$idfact <- as.factor(fap$idnum)
+
+pos_reg4 <- geese(r_n ~ treat + male + base_n + age, 
+                  id = idnum, 
+                  family = poisson(), 
+                  corstr = "exch",
+                  data = fap)
+summary(pos_reg4)
+
+
+pos_reg5 <- glm.nb(r_n ~ treat + male + base_n + age, data = fap)
+tidy(pos_reg5)
+glance(pos_reg5)
+summary(pos_reg5)
+#to convert dispersion parameter between SAS and R: SASdisp = 1/Rdisp = 1/3.94 = 0.2538
+
+
+# log binomial model ------------------------------------------------------
+
+help <- read_excel("data/HELPJsat.xlsx")
+help$drinks10 = help$i1/10
+
+table(help$homeless)
+
+logreg1 <- glm(homeless ~ drinks10, family =  binomial(), data = help)
+tidy(logreg1)
+tidy(logreg1, exp = T, conf.int = T)
+
+start.p <- mean(help$homeless)
+
+binreg1 <- glm(homeless ~ drinks10, family = binomial(log), 
+               data = help)
+
+binreg2 <- geese(homeless ~ drinks10, 
+                  id = id, 
+                  family = poisson(), 
+                  corstr = "exch",
+                  data = help)
+summary(binreg2)
