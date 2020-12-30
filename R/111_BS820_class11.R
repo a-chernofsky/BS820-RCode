@@ -82,6 +82,16 @@ cph2 <- coxph(Surv(surv1, dead) ~ trans + surg + ageaccpt,
               ties = "exact",
               data = stan)
 
+cph3 <- coxph(Surv(surv1, dead) ~ surg + ageaccpt + tt(wait), 
+              ties = "exact",
+              iter.max = 500,
+              data = stan, tt = function(x, t, ...) ifelse(x>t | is.na(x), 0, 1) )
+
+coxph(Surv(surv1, dead) ~ surg + ageaccpt + tt(wait), 
+      ties = "exact",
+      iter.max = 500,
+      data = stan, tt = function(x, t, ...) ifelse(x <= t, 1, 0) )
+
 # stan$time0 <- 0
 # stan$time1 <- ifelse(is.na(stan$dot), pmax(0, stan$dls - stan$doa),
 #                      pmax(0, (stan$dot -1) - stan$doa))
@@ -89,41 +99,109 @@ cph2 <- coxph(Surv(surv1, dead) ~ trans + surg + ageaccpt,
 # stan$futime <- ifelse(is.na(stan$dot), stan$time1,
 #                       stan$time2)
 
+stan2 <- stan
+stan2$time0 <- 0
+stan2$time1 <- ifelse(is.na(stan2$dot), pmax(0, stan2$dls - stan2$doa), 
+                      pmax(0, (stan2$dot - 1) - stan2$doa))
+stan2$plant <- 0
+stan2$dead1 <- ifelse(is.na(stan2$dot), stan2$dead, 0)
 
-tdata <- with(stan, data.frame(id = id,
-                               futime = pmax(.5, dls - doa),
-                               txtime = ifelse(dot == dls,
-                                              (dot - doa) -.5,
-                                              (dot - doa)),
-                               dead = dead))
+last <- stan2[!is.na(stan2$dot),]
+last$time0 <- pmax(0, (last$dot - 1) - last$doa)
+last$time1 <- pmax(0, last$dls - (last$doa - 1))
+last$plant <- 1
+last$dead1 <- last$dead
 
-tdata <- with(stan, data.frame(id = id,
-                               futime = pmax(.5, dls - doa),
-                               txtime = ifelse(is.na(dot),
-                                               (dls - doa) -.5,
-                                               (dot - doa)),
-                               dead = dead))
+stan2 <- rbind(stan2, last)
+stan2 <- stan2[order(stan2$id),]
+stan2$fudurat <- stan2$time1 - stan2$time0
 
-data.frame(subject = subject,
-           futime= pmax(.5, fu.date - accept.dt),
-           txtime= ifelse(tx.date == fu.date,
-                          (tx.date -accept.dt) -.5,
-                          (tx.date - accept.dt)),
-           fustat = fustat
-))
+tapply(stan2$fudurat, stan2$plant, function(x) c(n = length(x), sum = sum(x)))
+tapply(stan2$dead1, stan2$plant, function(x) c(n = length(x), sum = sum(x)))
 
-sdata <- tmerge(stan, tdata, id=id,
-                death = event(futime, dead),
-                plant = tdc(txtime),
-                options= list(idname="id"))
-
-attr(sdata, "tcount")
-
-cph3 <- coxph(Surv(tstart, tstop, death) ~ plant + surg + ageaccpt, 
+cph3 <- coxph(Surv(time0, time1, dead1) ~ plant + surg + ageaccpt, 
               ties = "exact",
-              data = sdata)
+              cluster = id,
+              data = stan2)
 cph3$coefficients
 
 coxph(Surv(start, stop, event) ~ transplant + surgery + year, 
       ties = "exact",
       data = heart)
+
+
+# recidivism data ---------------------------------------------------------
+
+recid <- read_sas("data/recidiv_cls10.sas7bdat")
+
+recid <- as.data.frame(recid)
+
+recid_long <- reshape(data = recid,
+                      varying = paste0("emp", 1:52),
+                      v.names = "employed",
+                      timevar = "time",
+                      idvar = "id",
+                      direction = "long")
+recid_long <- recid_long[order(recid_long$id),]
+
+
+recid_long2 <- recid_long[!is.na(recid_long$employed),]
+recid_long2$time0 <- c(NA, recid_long2$time[-nrow(recid_long2)])
+recid_long2$time0[which(!duplicated(recid_long2$id))] <- NA
+recid_long2$time0[is.na(recid_long2$time0)] <- 0
+recid_long2$time1 <- recid_long2$time
+
+recid_long2$event[cumsum(recid$week)] <- recid$arrest
+recid_long2$event[-cumsum(recid$week)] <- 0
+
+
+recid_cph <-  coxph(formula = Surv(time0, time1, event) ~ fin + age + race + wexp + mar + paro + prio + employed,
+                    data = recid_long2,
+                    id = id,
+                    ties    = "efron")
+summary(recid_cph)
+
+
+
+# Detecting non-PH --------------------------------------------------------
+
+support <- read_excel("data/support.xlsx")
+
+#create id variable
+support$id <- 1:nrow(support)
+
+#create numeric sex variable
+support$sexn <- ifelse(support$sex == "male", 0, 
+                   ifelse(support$sex == "female", 1, NA))
+
+support$dzclassn <- ifelse(support$dzclass == 'ARF/MOSF', 1,
+                           ifelse(support$dzclass == 'COPD/CHF/Cirrhosis', 2,
+                                  ifelse(support$dzclass == 'Cancer', 3,
+                                         ifelse(support$dzclass == 'Coma', 4, NA))))
+support$dzclassn <- factor(support$dzclassn)
+dzclass_dummy <- model.matrix(~-1 + dzclassn, data = support)
+support <- cbind(support, dzclass_dummy)
+
+survdiff(Surv(d.time, death) ~ dzclass, data = support)
+plot(survfit(Surv(d.time, death) ~ dzclass, data = support), fun = "cloglog")
+
+cph_not <- coxph(Surv(d.time, death) ~  dzclassn2+ dzclassn3 + dzclassn4 + 
+                  sexn + age + meanbp + hrt + sod +
+                  temp + crea + wblc + num.co, 
+                data = support)
+cph_t <- coxph(Surv(d.time, death) ~  dzclassn2+ dzclassn3 + dzclassn4 + 
+                 tt(dzclassn2)+ tt(dzclassn3) + tt(dzclassn4) + 
+                  sexn + age + meanbp + hrt + sod +
+                  temp + crea + wblc + num.co, 
+                data = support, 
+                tt = function(x, t, ...)x*log(t))
+anova(cph_t1, cph_t)
+cph_not$linear.predictors
+
+df <- length(cph_t$coefficients) - length(cph_not$coefficients)
+pchisq(2*(cph_t$loglik - cph_not$loglik)[2], df = df, lower= F)
+
+cph_str <- coxph(Surv(d.time, death) ~  strata(dzclassn) + 
+                   sexn + age + meanbp + hrt + sod +
+                   temp + crea + wblc + num.co,
+                 data = support)

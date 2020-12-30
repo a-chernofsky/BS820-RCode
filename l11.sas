@@ -1,3 +1,5 @@
+options yearcutoff=2000 nodate pageno=1 linesize=80 pagesize=60;
+
 filename in1 'C:\Users\ariel\Documents\BU_RCode\BS820-RCode\data\stan.txt';
 
 data stan;
@@ -6,10 +8,12 @@ data stan;
  id age dead dur surg trans wtime m1 m2 m3 reject;
  surv1=dls-doa;
  surv2=dls-dot;
- ageaccpt=(doa-dob)/365.25;
+ *ageaccpt=(doa-dob)/365.25;
+ ageaccpt=yrdif( dob, doa);
  agetrans=(dot-dob)/365.25;
  wait=dot-doa;
  if dot=. then trans=0; else trans=1;
+ *format dob /*mmddyy9.*/ doa /*mmddyy9.*/ dot mmddyy9. dls mmddyy9.;
 run;
 ods rtf file=STAnal bodytitle style=journal;
 proc print data=stan (obs=10);
@@ -47,4 +51,13 @@ else do;
  FUdurat = time1 - time0;
  output;
 end;
+run;
+
+proc means data = stan2;
+	var ageaccpt;
+run;
+
+proc phreg data=stan2;
+ model (time0, time1)*dead1(0)=plant surg ageaccpt / ties=exact;
+ title1 'Cox Regression with Split Time';
 run;
